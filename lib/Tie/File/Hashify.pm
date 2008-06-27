@@ -11,16 +11,18 @@ our $VERSION = '0.02';
 
 
 sub TIEHASH {
-	my ($class, $path, $parse, $format) = @_;
+	my ($class, $path, %options) = @_;
 
 	my $self = bless {
 		hash => {},
-		format => $format,
+		format => $options{format},
+		parse => $options{parse},
 		path => $path,
+		ro => $options{ro},
 		dirty => 0,
 	}, $class;
 
-	if($path and -e $path and $parse) {
+	if($path and -e $path and $options{parse}) {
 		my $io = new IO::File($path) or croak "Can't read $path. $!.\n";
 
 		while(my $line = $io->getline) {
@@ -29,19 +31,19 @@ sub TIEHASH {
 			my ($key, $value);
 
 			# Use callback for parsing.
-			if(ref($parse) eq 'CODE') {
-				($key, $value) = &{$parse}($line);
+			if(ref($options{parse}) eq 'CODE') {
+				($key, $value) = &{$options{parse}}($line);
 			}
 
 			# Parse line using a regular expression.
-			elsif(ref($parse) eq '' or uc(ref($parse)) eq 'REGEXP') {
-				my $re = ref($parse) ? $parse : qr/^$parse$/;
+			elsif(ref($options{parse}) eq '' or uc(ref($options{parse})) eq 'REGEXP') {
+				my $re = ref($options{parse}) ? $options{parse} : qr/^$options{parse}$/;
 				($key, $value) = ($line =~ $re);
 			}
 
 			# Croak.
 			else {
-				croak 'Can\'t use ', lc(ref($parse)), " for parsing.\n";
+				croak 'Can\'t use ', lc(ref($options{parse})), " for parsing.\n";
 			}
 
 			if(defined $key and length $key) {
@@ -65,6 +67,8 @@ sub FETCH {
 sub STORE {
 	my ($self, $key, $value) = @_;
 
+	croak "Can't store in read-only mode" if($self->{ro});
+
 	$self->{dirty} = !0;
 
 	return $self->{hash}->{$key} = $value;
@@ -80,6 +84,8 @@ sub EXISTS {
 sub DELETE {
 	my ($self, $key) = @_;
 
+	croak "Can't delete in read-only mode" if($self->{ro});
+
 	$self->{dirty} = !0;
 
 	return delete($self->{hash}->{$key});
@@ -88,6 +94,8 @@ sub DELETE {
 
 sub CLEAR {
 	my ($self) = @_;
+
+	croak "Can't clear in read-only mode" if($self->{ro});
 
 	$self->{dirty} = !0;
 
@@ -126,7 +134,7 @@ sub SCALAR {
 			if(ref($format) eq 'CODE') {
 				$text .= &{$format}($key, $value) . "\n";
 			}
-			
+
 			# Format using sprintf and a format string.
 			elsif(ref($format) eq '') {
 				$text .= sprintf($format, $key, $value) . "\n";
@@ -152,7 +160,7 @@ sub _store {
 
 	my $path = $self->{path};
 
-	if($path and $self->{dirty} and $self->{format}) {
+	if($path and $self->{dirty} and $self->{format} and !$self->{ro}) {
 		my $io = new IO::File('>' . $path) or croak "Can't write $path. $!.\n";
 
 		$io->print($self->SCALAR);
@@ -198,7 +206,7 @@ TIe::File::Hashify - Parse a file and tie the result to a hash.
 	# Format pairs as 'key = value':
 	sub format { "$_[0] = $_[1]" };
 
-	tie(%rc, 'Tie::File::Hashify', $path, \&parse, \&format);
+	tie(%rc, 'Tie::File::Hashify', $path, parse => \&parse, format => \&format);
 
 	print "option 'foo' = $rc{foo}\n";
 
@@ -221,27 +229,41 @@ file.
 
 =over 4
 
-=item B<tie>(%hash, $path, \&parse, \&format)
+=item B<tie>(%hash, 'Tie::File::Hashify', $path, %options)
 
 The third argument (after the hash itself and the package name of course) is
 the path to a file. The file does not really have to exist, but using a path to
 a non-existent file does only make sense if you provide a format-callback to
 write a new file.
 
-The third argument is used for parsing the file. It may either be code
-reference, which will be called with a line as argument and should return the
-key and the value for the hash element; or it may be a string or compiled
-regular expression (qr//). The expression will be applied to every line and $1
-and $2 will be used as key/value afterwards.
+After the second argument, a list of options may/should follow:
 
-The fourth argument is used for formatting the hash into something that can be
-written back to the file. It may be a code reference that takes two arguments
-(key and value) as arguments and returns a string (without trailing line-break
-- it will be added automatically), or a format string that is forwarded to
-B<sprintf> together with the key and the value.
+=over 4
 
-All arguments (B<path>, B<parse>, B<format>) each may be omitted / undef. If
-you omit all of them, you get a plain normal hash.
+=item B<parse>
+
+Either a code reference, which will be called with a line as argument and
+should return the key and the value for the hash element; or a string or
+compiled regular expression (qr//). The expression will be applied to every
+line and $1 and $2 will be used as key/value afterwards.
+
+=item B<format>
+
+This is used for formatting the hash into something that can be written back to
+the file. It may be a code reference that takes two arguments (key and value)
+as arguments and returns a string (without trailing line-break - it will be
+added automatically), or a format string that is forwarded to B<sprintf>
+together with the key and the value.
+
+=item B<ro>
+
+If this is true, changing the hash will make it croak, and the content will not
+be written back to the file.
+
+=back
+
+All arguments are optional. If you don't give any arugments, you get a plain
+normal hash.
 
 =back
 
@@ -249,6 +271,8 @@ you omit all of them, you get a plain normal hash.
 
 Copyright (C) 2008 by Jonas Kramer <jkramer@cpan.org>. Published under the
 terms of the Artistic License 2.0.
+
+"read-only" functionality by Marco Emilio Poleggi.
 
 =cut
 
